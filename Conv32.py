@@ -10,9 +10,9 @@ from scipy import linalg
 import os
 from summaries import TensorboardSummary
 
-summary = TensorboardSummary('./repr_dir/test4/net_1')
+summary = TensorboardSummary('./repr_dir/test7/net_1')
 net1_writer = summary.create_summary()
-test_summary = TensorboardSummary('./repr_dir/test4/net_2')
+test_summary = TensorboardSummary('./repr_dir/test7/net_2')
 net2_writer = test_summary.create_summary()
 
 
@@ -37,7 +37,7 @@ class Net(nn.Module):
         res = F.relu(self.conv3(res))
         # res = self.avgpool(res).squeeze(3).squeeze(2)
         res = res.view(res.shape[0], 32 * 32 * 32)
-        res = F.softmax(self.fc(res), dim=1)
+        res = self.fc(res)
         return res
 
 
@@ -65,7 +65,7 @@ def prepare_data():
     trainset = datasets.CIFAR10('../data/CIFAR10', train=True, download=True, transform=transform_train)
     testset = datasets.CIFAR10('../data/CIFAR10', train=False, transform=transform_test)
     train_loader = torch.utils.data.DataLoader(trainset, batch_size=8, shuffle=True, **kwargs)
-    val_loader = torch.utils.data.DataLoader(testset, batch_size=8, shuffle=False, **kwargs)
+    val_loader = torch.utils.data.DataLoader(testset, batch_size=128, shuffle=False, **kwargs)
 
     return train_loader, val_loader
 
@@ -97,6 +97,7 @@ def train(epoch, training_type,spasity):
         optimizer2.step()
 
         if training_type == 'sub-network':
+            drop()
             zero_grad()
 
         total += input.size(0)
@@ -272,13 +273,48 @@ def re_initiate_zyy():
             maxValue = torch.max(undropped_filters)
             minValue = torch.min(undropped_filters)
             new_ortho_filter = torch.clamp(new_ortho_filter,min=minValue,max=maxValue).cuda()
-            new_ortho_filter = (torch.mean(undropped_filters)/torch.mean(new_ortho_filter)) * new_ortho_filter
-            print (torch.mean(undropped_filters))
-            print (torch.mean(new_ortho_filter))
+            # new_ortho_filter = (torch.mean(undropped_filters)/torch.mean(new_ortho_filter)) * new_ortho_filter
+            # print (torch.mean(undropped_filters))
+            # print (torch.mean(new_ortho_filter))
             # print ('-----------------')
             # print (new_ortho_filter)
             torch.nn.init.constant(param[layer_index][dropped_filter_list], 0)
             param[layer_index][dropped_filter_list].data += new_ortho_filter.view(K, c_in, k_w, k_h).float().cuda()
+        else:
+            torch.nn.init.orthogonal_(param[layer_index])
+
+def re_initiate_zyy_1():
+    param = list(net2.parameters())
+    for layer_index, dropped_filter_list in dropped_filters.items():
+        c_out, c_in, k_w, k_h = param[layer_index].shape
+        conv_layer = param[layer_index].view(c_out, -1).detach().cpu().numpy()
+
+        undropped_filter_list = list(set(np.arange(c_out)) - set(dropped_filter_list))
+        # undropped_filters = conv_layer[undropped_filter_list]
+        undropped_filters = torch.FloatTensor(conv_layer[undropped_filter_list]).cuda()
+
+        dropped_w = dropped_filters_weight[layer_index].detach()
+        W = torch.cat([undropped_filters, dropped_w], dim=0)
+        W = W.cpu().numpy()
+
+        if len(undropped_filter_list) != 0:
+            M,N = W.shape
+            if M < N:
+                W = W.T
+            q, r = linalg.qr(W,mode='economic')
+            K = len(dropped_filter_list)
+            diag = np.diag(r)
+            q *= np.sign(diag).T
+            print (q.shape)
+            print (param[layer_index].shape)
+            new_ortho_filter = torch.FloatTensor(q).cuda()
+            # print(new_ortho_filter.shape)
+            maxValue = torch.max(undropped_filters)
+            minValue = torch.min(undropped_filters)
+            new_ortho_filter = torch.clamp(new_ortho_filter,min=minValue,max=maxValue)
+            param[layer_index].data = new_ortho_filter.view(param[layer_index].shape)
+            # torch.nn.init.constant(param[layer_index][dropped_filter_list], 0)
+            # param[layer_index][dropped_filter_list].data += new_ortho_filter.view(K, c_in, k_w, k_h).float().cuda()
         else:
             torch.nn.init.orthogonal_(param[layer_index])
 
@@ -373,7 +409,7 @@ while epoch < 109:
         test('sub-network',spasity)
         epoch += 1
 
-    re_initiate_zyy()
+    re_initiate_zyy_1()
     # re_initiate_hzb()
 print ('Std Train:',net1_val_acc)
 print ('RePr:',net2_val_acc)
